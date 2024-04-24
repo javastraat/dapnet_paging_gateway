@@ -1,32 +1,27 @@
-#############################
-##### Import Libraries
-
+#!/usr/bin/python3
+from requests.auth import HTTPBasicAuth
+import http.client
 import json
+import mysql.connector
+import os
 import requests
 import sys
-import os
-from requests.auth import HTTPBasicAuth
-import http.client, urllib
-import mysql.connector
-from mysql.connector import Error
-
 
 #############################
 ##### Define Variables
 
 # define mysql connection variables
-mysql_host = 'MYSQL HOST IP ADDRESS'
-mysql_user = 'MYSQL USERNAME'
-mysql_password = 'MYSQL PASSWORD'
-
+mysql_host = 'localhost'
+mysql_user = 'root'
+mysql_password = 'passw0rd'
+mysql_databasename = 'dapnet_freepbx'  # DO NOT CHANGE THIS
 
 #############################
 ##### DO NOT CHANGE BELOW
 
 linefeed = "\r\n"
 dapnet_url = 'http://www.hampager.de:8080/calls'
-dapnet_data = os.path.dirname(os.path.abspath(__file__)) +  "/dapnet.json"
-mysql_databasename = 'dapnet_freepbx' # DO NOT CHANGE THIS
+dapnet_data = os.path.dirname(os.path.abspath(__file__)) + "/dapnet.json"
 
 # configure Database connection for MySQL Connector
 db_config = {
@@ -37,56 +32,73 @@ db_config = {
     'auth_plugin': 'mysql_native_password'
 }
 
-conn = mysql.connector.connect(**db_config)
-
 # Load DAPNET Credentials
-df = open(dapnet_data)
-creds_data = json.load(df)
+with open(dapnet_data) as df:
+    creds_data = json.load(df)
 
 #############################
 ##### Define Functions
 
 def select_sql(conn, sql):
     # Executes SQL for Selects - Returns a "value"
-    cur = conn.cursor()
-    cur.execute(sql)
-    return cur.fetchall()
-
-def exec_sql(conn,sql):
-    # Executes SQL for Updates, inserts and deletes - Doesn't return anything
-    cur = conn.cursor()
-    cur.execute(sql)
-    conn.commit()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        return cur.fetchall()
+    except mysql.connector.Error as e:
+        print("MySQL Error:", e)
+        sys.exit(1)
 
 def send_dapnet(creds, send_to, text):
-
-    data = json.dumps({"text": text, "callSignNames": [send_to], "transmitterGroupNames": [creds["tx_group"]], "emergency": False})
-    response = requests.post(dapnet_url, data=data, auth=HTTPBasicAuth(creds["username"],creds["password"])) 
-
+    data = json.dumps({"text": text, "callSignNames": [send_to], "transmitterGroupNames": [creds["tx_group"]],
+                       "emergency": False})
+    try:
+        response = requests.post(dapnet_url, data=data, auth=HTTPBasicAuth(creds["username"], creds["password"]))
+        if response.status_code != 200:
+            print("DAPNET Error:", response.text)
+            sys.exit(1)
+    except Exception as e:
+        print("DAPNET Request Error:", e)
+        sys.exit(1)
 
 #############################
 ##### Main Program
 
-# Load paramters to variables
+# Create a MySQL connection
+try:
+    conn = mysql.connector.connect(**db_config)
+except mysql.connector.Error as e:
+    print("MySQL Connection Error:", e)
+    sys.exit(1)
+
+# Load parameters from command line arguments
+if len(sys.argv) != 4:
+    print("Usage: python3 script.py <send_to_ric> <callback> <calling_from>")
+    sys.exit(1)
+
 send_to_ric = sys.argv[1]
 callback = sys.argv[2]
 calling_from = sys.argv[3]
 
 # Get the callsign from the extension calling from
-sql = "select callsign from ext_data where extension = '" + calling_from + "';"
-results = select_sql(conn,sql)
+sql = "SELECT callsign FROM ext_data WHERE extension = '{}'".format(calling_from)
+results = select_sql(conn, sql)
 
-for row in results:
-    from_callsign = row[0]
+if not results:
+    print("Error: Unable to find callsign for the provided extension:", calling_from)
+    sys.exit(1)
+
+from_callsign = results[0][0]  # Extracting the callsign from the first row of the result
 
 # Get Callsign to send to from DMR ID
-sql = "select callsign from radioid_data where radio_id = " + send_to_ric + ";"
-results = select_sql(conn,sql)
+sql = "SELECT callsign FROM radioid_data WHERE radio_id = {}".format(send_to_ric)
+results = select_sql(conn, sql)
 
-for row in results:
-    to_callsign = row[0]
+if not results:
+    print("Error: Unable to find callsign for the provided DMR ID:", send_to_ric)
+    sys.exit(1)
 
+to_callsign = results[0][0]  # Extracting the callsign from the first row of the result
 
 # Build Message and then send
-
-send_dapnet(creds_data["my_creds"], to_callsign, from_callsign + ": Call me at " + callback + " #HOIP_DAPNET_GATEWAY")
+send_dapnet(creds_data["my_creds"], to_callsign, "{}: Call me at {} #HAMVOIP Dapnet Gateway".format(from_callsign, callback))
