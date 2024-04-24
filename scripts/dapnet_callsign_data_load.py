@@ -1,112 +1,124 @@
-##### Import Libraries
-
+#!/usr/bin/python3
 import json
 import pandas as pd
 import requests
-import sys
 import os
 from requests.auth import HTTPBasicAuth
 import mysql.connector
 from mysql.connector import Error
 import sqlalchemy
-from datetime import datetime, date, time, timedelta
+from datetime import datetime
+import io
 
+# Define MySQL connection variables
+mysql_host = 'localhost'
+mysql_user = 'root'
+mysql_password = 'passw0rd'
+database_name = 'dapnet_freepbx'
 
-#############################
-##### Define Variables
-
-# define mysql connection variables
-mysql_host = 'MYSQL HOST IP ADDRESS'
-mysql_user = 'MYSQL USERNAME'
-mysql_password = 'MYSQL PASSWORD'
-
-#############################
-##### DO NOT CHANGE BELOW
-
-linefeed = "\r\n"
+# URL to fetch DAPNET callsign data
 dapnet_url = 'http://www.hampager.de:8080/callsigns'
-radioid_url = 'https://www.radioid.net/static/user.csv'
-mysql_databasename = 'dapnet_freepbx' # DO NOT CHANGE THIS
 
-# configure Database connection for MySQL Connector
-db_config = {
-    'host': mysql_host,
-    'database': mysql_databasename,
-    'user': mysql_user,
-    'password': mysql_password,
-    'auth_plugin': 'mysql_native_password'
-}
+# URL to download the RadioID CSV file
+radioid_url = 'https://radioid.net/static/user.csv'
 
-conn = mysql.connector.connect(**db_config)
+def connect_mysql():
+    """Establishes a connection to MySQL and returns the connection object."""
+    try:
+        conn = mysql.connector.connect(
+            host=mysql_host,
+            user=mysql_user,
+            password=mysql_password,
+            database=database_name,
+            auth_plugin='mysql_native_password'
+        )
+        print("Connected to MySQL database")
+        return conn
+    except Error as e:
+        print(f"Error connecting to MySQL: {e}")
+        return None
 
-# configure Database connection for SQL Alchemy
-db_conn = sqlalchemy.create_engine('mysql+mysqlconnector://{0}:{1}@{2}/{3}'.
-                                               format(mysql_user, mysql_password, 
-                                                      mysql_host, mysql_databasename))
+def fetch_dapnet_callsigns(url):
+    """Fetches DAPNET callsign data from the specified URL."""
+    try:
+        response = requests.get(url, auth=HTTPBasicAuth("n8acl", "Xyke8c11qD6I9vTpz63U"))
+        response.raise_for_status()  # Raise an exception for HTTP errors
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching DAPNET callsign data: {e}")
+        return None
 
+def load_dapnet_callsigns(conn, dapnet_callsigns):
+    """Loads DAPNET callsign data into MySQL database."""
+    try:
+        print("DAPNET data import started")
+        cursor = conn.cursor()
+        cursor.execute("DROP TABLE IF EXISTS dapnet_data;")
+        cursor.execute("CREATE TABLE dapnet_data (callsign TEXT);")
+        for callsign_data in dapnet_callsigns:
+            callsign = callsign_data.get('name', '')
+            sql = f"INSERT INTO dapnet_data (callsign) VALUES ('{callsign}');"
+            cursor.execute(sql)
+        conn.commit()
+        print("DAPNET data imported into MySQL successfully")
+    except Error as e:
+        print(f"Error loading DAPNET callsign data: {e}")
 
-#############################
-##### Define Functions
-   
-def select_sql(conn, sql):
-    # Executes SQL for Selects - Returns a "value"
-    cur = conn.cursor()
-    cur.execute(sql)
-    return cur.fetchall(), cur.rowcount
+def import_radio_id(conn, csv_url):
+    """Downloads CSV from URL and imports it into MySQL."""
+    try:
+        # Download CSV
+        response = requests.get(csv_url)
+        response.raise_for_status()  # Raise an exception for HTTP errors
+        
+        # Read CSV into DataFrame
+        df = pd.read_csv(io.StringIO(response.text))
+        
+        # Check if 'callsign' column exists in the DataFrame
+        if 'CALLSIGN' in df.columns:
+            # Create new table and import data
+            print("RADIOID data import started")
+            cursor = conn.cursor()
+            cursor.execute("DROP TABLE IF EXISTS radioid_data;")
+            cursor.execute("CREATE TABLE radioid_data (CALLSIGN TEXT, RADIO_ID INT);")
+            for index, row in df.iterrows():
+                cursor.execute("INSERT INTO radioid_data (CALLSIGN, RADIO_ID) VALUES (%s, %s);", (row['CALLSIGN'], row['RADIO_ID']))
+            conn.commit()
+            print("RadioID data imported into MySQL successfully")
+        else:
+            print("Error: 'callsign' column not found in CSV data")
+    except Exception as e:
+        print(f"Error importing RadioID data into MySQL: {e}")
 
-def exec_sql(conn,sql):
-    # Executes SQL for Updates, inserts and deletes - Doesn't return anything
-    cur = conn.cursor()
-    cur.execute(sql)
-    conn.commit()
+def main():
+    now = datetime.now()
+    current_time = now.strftime("%H:%M")
+    print("Starting process at:", current_time)
 
-#############################
-##### Main Program
+    # Connect to MySQL
+    conn = connect_mysql()
+    if not conn:
+        return
 
-now = datetime.now()
-current_time = now.strftime("%H:%M")
+    # Load DAPNET callsign data
+    dapnet_callsign_data = fetch_dapnet_callsigns(dapnet_url)
+    if dapnet_callsign_data:
+        load_dapnet_callsigns(conn, dapnet_callsign_data)
 
-## First, lets insert the DAPNET Callsign List
+    # Import RadioID data
+    import_radio_id(conn, radioid_url)
 
-print("Loading DAPNET Callsign Data " + current_time)
+    # Clean up RadioID data
+#    try:
+#        cursor = conn.cursor()
+#        cursor.execute("DELETE FROM radioid_data WHERE CALLSIGN NOT IN (SELECT UPPER(callsign) AS callsign FROM dapnet_data)")
+#        conn.commit()
+#        print("RadioID data cleaned up successfully")
+#    except Error as e:
+#        print(f"Error cleaning up RadioID data: {e}")
 
-sql = "drop table if exists dapnet_data;"
+#    conn.close()
+    print("Process completed at:", datetime.now().strftime("%H:%M"))
 
-exec_sql(conn,sql)
-
-sql = "create table dapnet_data (callsign text);"
-
-exec_sql(conn,sql)
-
-dapnet_callsign_data = requests.get(dapnet_url, auth=HTTPBasicAuth("n8acl","Xyke8c11qD6I9vTpz63U")).json() 
-
-for i in range(0,len(dapnet_callsign_data)):
-    sql = "insert into dapnet_data(callsign) "
-    sql = sql + "values('" + dapnet_callsign_data[i]['name'] + "');"
-
-    exec_sql(conn,sql)
-
-## Now let's get the Radio ID data for the DMR IDs
-
-now = datetime.now()
-current_time = now.strftime("%H:%M")
-
-print("Loading RadioID Data " + current_time)
-
-response = requests.get(radioid_url, allow_redirects=True)
-
-open('users.csv','wb').write(response.content)
-
-radioid_dfs = pd.read_csv('users.csv')
-
-radioid_dfs.to_sql(con=db_conn, name='radioid_data', if_exists='replace')
-
-os.remove('users.csv')
-
-## Now let's clean up the Radio ID Data to only include those callsigns that have a DAPNET account.
-## This is just to keep the data smaller.
-
-sql = "delete from radioid_data where callsign not in (select upper(callsign) as callsign from dapnet_data)"
-exec_sql(conn,sql)
-
-print("Completed: " + current_time)
+if __name__ == "__main__":
+    main()
