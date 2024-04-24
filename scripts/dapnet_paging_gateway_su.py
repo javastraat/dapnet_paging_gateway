@@ -15,9 +15,9 @@ from mysql.connector import Error
 ##### Define Variables
 
 # define mysql connection variables
-mysql_host = 'MYSQL HOST IP ADDRESS'
-mysql_user = 'MYSQL USERNAME'
-mysql_password = 'MYSQL PASSWORD'
+mysql_host = 'localhost'
+mysql_user = 'root'
+mysql_password = 'passw0rd'
 
 
 #############################
@@ -82,4 +82,4 @@ for row in results:
 
 # Build Message and then send
 
-send_dapnet(creds_data["my_creds"], to_callsign, from_callsign + ": Call me at " + callback)
+send_dapnet(creds_data["my_creds"], to_callsign, from_callsign + ": Call me at " + callback + " @HAMVOIP")
